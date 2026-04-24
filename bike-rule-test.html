@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>自転車走行判定MVP</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+      text-align: center;
+    }
+    #result {
+      font-size: 36px;
+      margin-top: 30px;
+    }
+    #detail {
+      margin-top: 20px;
+      font-size: 16px;
+      white-space: pre-wrap;
+    }
+    button {
+      font-size: 20px;
+      padding: 12px 24px;
+      border-radius: 12px;
+    }
+  </style>
+</head>
+<body>
+  <h1>自転車走行判定MVP</h1>
+  <button onclick="start()">判定開始</button>
+
+  <div id="result">待機中</div>
+  <div id="detail"></div>
+
+  <script>
+    let lastFetchTime = 0;
+
+    function start() {
+      if (!navigator.geolocation) {
+        document.getElementById("result").textContent = "位置情報が使えません";
+        return;
+      }
+
+      navigator.geolocation.watchPosition(
+        async (pos) => {
+          const lat = pos.coords.latitude;
+          const lon = pos.coords.longitude;
+          const accuracy = pos.coords.accuracy;
+
+          document.getElementById("detail").textContent =
+            `現在地取得中\n緯度: ${lat}\n経度: ${lon}\n精度: 約${Math.round(accuracy)}m`;
+
+          const now = Date.now();
+          if (now - lastFetchTime < 8000) return;
+          lastFetchTime = now;
+
+          try {
+            const tagsList = await fetchOSM(lat, lon);
+            const decision = judge(tagsList);
+
+            document.getElementById("result").textContent = decision.label;
+            document.getElementById("detail").textContent =
+              `理由: ${decision.reason}\n\n` +
+              `緯度: ${lat}\n経度: ${lon}\n精度: 約${Math.round(accuracy)}m\n` +
+              `取得道路数: ${tagsList.length}`;
+          } catch (e) {
+            document.getElementById("result").textContent = "⚠️ 取得失敗";
+            document.getElementById("detail").textContent = e.message;
+          }
+        },
+        (err) => {
+          document.getElementById("result").textContent = "位置情報エラー";
+          document.getElementById("detail").textContent = err.message;
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 3000,
+          timeout: 10000
+        }
+      );
+    }
+
+    async function fetchOSM(lat, lon) {
+      const query = `
+        [out:json][timeout:10];
+        (
+          way(around:35,${lat},${lon})["highway"];
+        );
+        out tags center;
+      `;
+
+      const url =
+        "https://overpass-api.de/api/interpreter?data=" +
+        encodeURIComponent(query);
+
+      const res = await fetch(url);
+      const data = await res.json();
+
+      return data.elements.map(e => e.tags || {});
+    }
+
+    function judge(tagsList) {
+      for (const t of tagsList) {
+        if (t.bicycle === "no") {
+          return {
+            label: "⚠️ 不明/注意",
+            reason: "近くに bicycle=no があるため、自転車不可の可能性があります"
+          };
+        }
+
+        if (
+          t.highway === "path" &&
+          t.bicycle === "designated" &&
+          t.foot === "designated"
+        ) {
+          return {
+            label: "🚶 歩道・共用道OK",
+            reason: "foot=designated + bicycle=designated の道があります"
+          };
+        }
+
+        if (t.highway === "cycleway") {
+          return {
+            label: "🚲 自転車道/車道側",
+            reason: "highway=cycleway が見つかりました"
+          };
+        }
+
+        if (
+          t.cycleway === "lane" ||
+          t.cycleway === "track" ||
+          t["cycleway:left"] ||
+          t["cycleway:right"]
+        ) {
+          return {
+            label: "🚲 車道側",
+            reason: "cycleway 情報があります"
+          };
+        }
+      }
+
+      return {
+        label: "🚲 車道を走るべき",
+        reason: "歩道通行可の情報が見つからないため、車道原則で判定"
+      };
+    }
+  </script>
+</body>
+</html>
